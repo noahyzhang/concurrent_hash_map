@@ -12,9 +12,9 @@
 
 ### 二、如何使用
 
-如下使用多线程来操作 ConcurrentHashMap
+如下使用多线程来操作 ConcurrentHashMap
 
-```
+```c++
 #include <string>
 #include <vector>
 #include <thread>

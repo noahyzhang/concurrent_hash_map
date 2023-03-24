@@ -14,6 +14,7 @@
 #include <functional>
 #include <atomic>
 #include <thread>
+#include <memory>
 
 namespace noahyzhang {
 namespace concurrent {
@@ -74,6 +75,17 @@ public:
     }
 
     /**
+     * @brief 插入一对键值，如果键存在，则增加值
+     * 
+     * @param key 
+     * @param value 
+     */
+    void insert_and_inc(const K& key, const V& value) {
+        size_t hash_val = hash_fn_(key) % hash_bucket_size_;
+        hash_table_[hash_val].insert_and_inc(key, value);
+    }
+
+    /**
      * @brief 删除某个键
      * 
      * @param key 
@@ -92,6 +104,45 @@ public:
             hash_table_[i].clear();
         }
     }
+
+private:
+    /**
+     * @brief 迭代器，待优化
+     * 
+     */
+    class ConstIterator {
+    public:
+        explicit ConstIterator(HashNode<K, V>* hash_node) : hash_node_(hash_node) {}
+
+        const K& first() const {
+            return hash_node_->get_key();
+        }
+        const V& second() const {
+            return hash_node_->get_value();
+        }
+        bool operator==(const ConstIterator& other) const {
+            if (other.hash_node_ == nullptr || hash_node_ == nullptr) {
+                return false;
+            }
+            if ((other.hash_node_->get_key() == hash_node_->get_key())
+                && (other.hash_node_->get_value() == hash_node_->get_value())) {
+                return true;
+            }
+            return false;
+        }
+        bool operator==(void* point) const {
+            return hash_node_ == point;
+        }
+        bool operator!=(const ConstIterator& other) const {
+            return !ConstIterator::operator==(other);
+        }
+        bool operator!=(void* point) const {
+            return !ConstIterator::operator==(point);
+        }
+
+    private:
+        HashNode<K, V>* hash_node_ = nullptr;
+    };
 
 private:
     // 哈希桶，以数组的形式实现
@@ -176,6 +227,36 @@ public:
         } else {
             // 桶中存在 key，直接修改
             node->set_value(value);
+        }
+        pthread_rwlock_unlock(&rw_lock_);
+    }
+
+    /**
+     * @brief 插入一对键值，如果键存在，则增加值
+     * 
+     * @param key 
+     * @param value 
+     */
+    void insert_and_inc(const K& key, const V& value) {
+        // 加写锁
+        pthread_rwlock_wrlock(&rw_lock_);
+        HashNode<K, V>* prev = nullptr, *node = head_;
+        for (; node != nullptr && node->get_key() != key;) {
+            prev = node;
+            node = node->next_;
+        }
+        // 此时有两种情况
+        // 1. head_ 本身为空
+        // 2. head_ 链表遍历完也没有发现 key，此时 node 指向尾节点的 next，为空，prev 指向尾节点
+        if (node == nullptr) {
+            if (head_ == nullptr) {
+                head_ = new HashNode<K, V>(key, value);
+            } else {
+                prev->next_ = new HashNode<K, V>(key, value);
+            }
+        } else {
+            // 桶中存在 key，给他增加
+            node->get_value() += value;
         }
         pthread_rwlock_unlock(&rw_lock_);
     }
@@ -273,11 +354,20 @@ public:
     }
 
     /**
+     * @brief 获取节点的值
+     * 
+     * @return V& 
+     */
+    V& get_value() {
+        return value_;
+    }
+
+    /**
      * @brief 设置节点的值
      * 
      * @param value 
      */
-    void set_value(V value) {
+    void set_value(const V value) {
         value_ = value;
     }
 

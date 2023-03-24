@@ -25,3 +25,12 @@ add_executable(sample ${SAMPLE_SRC})
 target_link_libraries(sample
     pthread
 )
+
+# 测试
+file (GLOB OTHER_SRC
+    ./examples/test.cpp
+)
+add_executable(test ${OTHER_SRC})
+target_link_libraries(test
+    pthread
+)

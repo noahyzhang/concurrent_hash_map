@@ -14,6 +14,7 @@
 #include <functional>
 #include <atomic>
 #include <thread>
+#include <utility>
 #include <memory>
 
 namespace noahyzhang {
@@ -24,6 +25,7 @@ namespace concurrent {
 
 template <typename K, typename V> class HashNode;
 template <typename K, typename V> class HashBucket;
+template <typename K, typename V> class ConstIterator;
 
 /**
  * @brief 线程安全的哈希表
@@ -105,44 +107,14 @@ public:
         }
     }
 
-private:
     /**
-     * @brief 迭代器，待优化
+     * @brief 获取迭代器
      * 
+     * @return ConstIterator 
      */
-    class ConstIterator {
-    public:
-        explicit ConstIterator(HashNode<K, V>* hash_node) : hash_node_(hash_node) {}
-
-        const K& first() const {
-            return hash_node_->get_key();
-        }
-        const V& second() const {
-            return hash_node_->get_value();
-        }
-        bool operator==(const ConstIterator& other) const {
-            if (other.hash_node_ == nullptr || hash_node_ == nullptr) {
-                return false;
-            }
-            if ((other.hash_node_->get_key() == hash_node_->get_key())
-                && (other.hash_node_->get_value() == hash_node_->get_value())) {
-                return true;
-            }
-            return false;
-        }
-        bool operator==(void* point) const {
-            return hash_node_ == point;
-        }
-        bool operator!=(const ConstIterator& other) const {
-            return !ConstIterator::operator==(other);
-        }
-        bool operator!=(void* point) const {
-            return !ConstIterator::operator==(point);
-        }
-
-    private:
-        HashNode<K, V>* hash_node_ = nullptr;
-    };
+    ConstIterator<K, V> get_iterator() {
+        return ConstIterator<K, V>(this);
+    }
 
 private:
     // 哈希桶，以数组的形式实现
@@ -151,6 +123,7 @@ private:
     F hash_fn_;
     // 哈希桶的个数
     size_t hash_bucket_size_;
+    friend class ConstIterator<K, V>;
 };
 
 /**
@@ -308,9 +281,11 @@ public:
         pthread_rwlock_unlock(&rw_lock_);
     }
 
-private:
+public:
     // 桶中单链表的头节点
     HashNode<K, V>* head_ = nullptr;
+
+private:
     // 读写锁
     pthread_rwlock_t rw_lock_;
 };
@@ -380,6 +355,134 @@ private:
     K key_;
     // 节点的值
     V value_;
+};
+
+/**
+ * @brief 迭代器，待优化
+ * 
+ */
+
+/**
+ * @brief 迭代器
+ *  注意：此迭代器非线程安全，特别注意
+ * @tparam K 
+ * @tparam V 
+ */
+template <typename K, typename V>
+class ConstIterator {
+public:
+    ConstIterator() = delete;
+    ~ConstIterator() = default;
+    explicit ConstIterator(ConcurrentHashMap<K, V>* cmp) : cmp_(cmp) {
+        for (; hash_node_ == nullptr && bucket_pos_ < cmp_->hash_bucket_size_;) {
+            HashNode<K, V>* node = cmp_->hash_table_[bucket_pos_].head_;
+            if (node != nullptr) {
+                hash_node_ = node;
+                break;
+            }
+            if (++bucket_pos_ >= cmp_->hash_bucket_size_) break;
+        }
+    }
+    // 拷贝函数使用浅拷贝是没有问题的
+    ConstIterator(const ConstIterator&) = default;
+    ConstIterator& operator=(const ConstIterator&) = default;
+    ConstIterator(ConstIterator&&) = default;
+    ConstIterator& operator=(ConstIterator&&) = default;
+
+public:
+    /**
+     * @brief 运算符 == 重载
+     *  比较存储的 node 的 key 、value 是否相等
+     * @param other 
+     * @return true 
+     * @return false 
+     */
+    bool operator==(const ConstIterator& other) const {
+        if (other.hash_node_ == nullptr || hash_node_ == nullptr) {
+            return false;
+        }
+        if ((other.hash_node_->get_key() == hash_node_->get_key())
+            && (other.hash_node_->get_value() == hash_node_->get_value())) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * @brief 运算符 == 重载
+     *  比较 node 是否为空
+     * @param point 
+     * @return true 
+     * @return false 
+     */
+    bool operator==(void* point) const {
+        return hash_node_ == point;
+    }
+
+    /**
+     * @brief 运算符 != 重载
+     *  
+     * @param other 
+     * @return true 
+     * @return false 
+     */
+    bool operator!=(const ConstIterator& other) const {
+        return !ConstIterator::operator==(other);
+    }
+
+    /**
+     * @brief 运算符 != 重载
+     * 
+     * @param point 
+     * @return true 
+     * @return false 
+     */
+    bool operator!=(void* point) const {
+        return !ConstIterator::operator==(point);
+    }
+
+    /**
+     * @brief 运算符 ++ 重载
+     * 
+     * @return ConstIterator& 
+     */
+    ConstIterator& operator++(int) {
+        // hash_node 为空，直接返回
+        if (hash_node_ == nullptr) return *this;
+        // hash_node 不为空，并且 next 有值，则返回 next
+        if (hash_node_->next_ != nullptr) {
+            hash_node_ = hash_node_->next_;
+            return *this;
+        }
+        // 如果 hash_node 是当前桶中最后一个元素，寻找下一个桶的非空头节点
+        ++bucket_pos_;
+        for (; bucket_pos_ < cmp_->hash_bucket_size_; ++bucket_pos_) {
+            HashNode<K, V>* node = cmp_->hash_table_[bucket_pos_].head_;
+            if (node != nullptr) {
+                hash_node_ = node;
+                return *this;
+            }
+        }
+        hash_node_ = nullptr;
+        return *this;
+    }
+
+    /**
+     * @brief 运算符 -> 重载
+     *  返回 node 指针
+     * @return HashNode<K, V>* 
+     */
+    HashNode<K, V>* operator->() const {
+        return hash_node_;
+    }
+
+private:
+    // hash map 的指针
+    ConcurrentHashMap<K, V>* cmp_;
+    // 当前处于那个 bucket 位置
+    uint64_t bucket_pos_ = 0;
+    // 当前指向的 node
+    HashNode<K, V>* hash_node_ = nullptr;
 };
 
 }  // namespace concurrent
